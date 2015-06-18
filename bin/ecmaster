@@ -1,0 +1,157 @@
+#!/bin/bash
+#
+# Dispatcher Startup script for the EC-Cloud Vertical Server
+#
+# chkconfig: - 08 92
+# description: The EC-Cloud Dispatcher is Web for mangement.
+set -e
+
+# Default values
+PROJECT="ecmaster"
+PROGRAM="ecmaster"
+CONFIG="/etc/${PROJECT}/${PROJECT}.conf"
+RUNNING_USER="root"
+PROGRAM_ROOT_PATH="/opt/$PROGRAM/current"
+FOREVER_ROOT_PATH="$PROGRAM_ROOT_PATH"
+FOREVER_LOG_PATH="/var/log/${PROJECT}"
+FOREVER_PID_PATH="/var/run/${PROJECT}"
+FILE="/etc/$PROJECT/$PROJECT.json"
+
+if [ -f $CONFIG ];then
+    source $CONFIG
+fi
+BIND_HOST=${BIND_HOST:-127.0.0.1}
+WORKERS=${WORKERS:-4}
+STARTING_PORT=${STARTING_PORT:-3001}
+
+# set node env
+export NODE_ENV="production"
+
+# True if file is executable
+test -x $DAEMON || exit 0
+function create_dir() {
+  if [[ ! -e $1 ]]; then
+    mkdir -p $1
+    chown -R ${RUNNING_USER} $1
+    chmod 755 $1
+  fi
+}
+
+function is_running() {
+  local list=$(su -s /bin/bash $RUNNING_USER -c "forever list" | awk '{print $3}' | grep $1)
+  if [[ ! -z $list ]]; then
+    echo "$1 is already running."
+  fi
+}
+
+function is_not_running() {
+  local list=$(su -s /bin/bash $RUNNING_USER -c "forever list" | awk '{print $3}' | grep $1)
+  if [[ -z $list ]]; then
+    echo "$PROJECT is not running."
+  fi
+}
+
+function forever_start() {
+  local run_app_cmd="server.js"
+  local program_path="$PROGRAM_ROOT_PATH"
+
+  cd $program_path
+
+  # get if program is a web application
+  local is_web_app=$(grep "require('express')" server.js)
+  echo "is web: $is_web_app"
+  if [[ ! -z $is_web_app ]]; then
+    export NODE_ENV=production
+    local starting_port=$(($STARTING_PORT + $2 - 1))
+    run_app_cmd="$run_app_cmd"
+  fi
+
+  local log_file="$FOREVER_LOG_PATH/$1.log"
+  local pid_file="$FOREVER_PID_PATH/$1.$2.pid"
+
+  # Keep forever root path to system default
+  local cmd=$(cat << EOF
+$(which forever) --uid $1.$2 --append \
+--minUptime 1000 --spinSleepTime 1000 \
+-l $log_file \
+--pidFile $pid_file \
+start $run_app_cmd
+EOF
+)
+
+  cd $program_path
+  echo "Running command: $cmd"
+  su -s /bin/bash $RUNNING_USER -c "$cmd"
+}
+
+# Start Daemon
+function start() {
+  create_dir $FOREVER_LOG_PATH
+  local running=$(is_running $PROJECT)
+  # only start it when it's not running
+  if [[ -z $running ]]; then
+    echo "Starting $PROJECT..."
+    for i in $(seq 1 $WORKERS)
+    do
+      forever_start "$PROJECT" "$i"
+    done
+  else
+    echo $running
+  fi
+}
+
+# Stop Daemon
+function stop() {
+  local not_running=$(is_not_running $PROJECT)
+  # only stop it when it's running
+  if [[ -z $not_running ]]; then
+    echo "Stopping $PROJECT..."
+    local list=$(su -s /bin/bash $RUNNING_USER -c "forever list" | awk '{print $3}' | grep $PROJECT)
+    for l in $list; do
+      echo "forever stop $l"
+      su -s /bin/bash $RUNNING_USER -c "$(which forever) stop $l"
+    done
+  else
+    echo $not_running
+  fi
+}
+
+# Restart Daemon
+function restart() {
+  echo "Restart $PROJECT..."
+  stop
+  start
+}
+
+# Daemon Status
+function status() {
+  echo "$PROJECT Status..."
+  local not_running=$(is_not_running $PROJECT)
+  if [[ -z $not_running ]]; then
+    su -s /bin/bash $RUNNING_USER -c "forever list" | grep $PROJECT | awk -F '[ =]+' '{print $3" "$7":"$9}'
+  else
+    echo $not_running
+    return 3
+  fi
+
+}
+
+# Export env
+export PATH=/usr/local/bin/:/usr/bin:/usr/sbin:$PATH
+
+# Command Argument
+option=$1
+shift
+
+case "$option" in
+  'start') start $*;;
+  'stop') stop $*;;
+  'restart') restart $*;;
+  'status') status $* ;;
+  *)
+    echo "Usage: $0 [start|stop|restart|status]" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

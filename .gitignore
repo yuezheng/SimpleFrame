@@ -1,0 +1,7 @@
+app/**/*.js
+node_modules/
+*.swp
+public/app/bower_components/
+.tmp
+dist/
+.nodemonignore
